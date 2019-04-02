@@ -6,13 +6,15 @@ Queries a JSON API and writes daily records as parquet files.
 import os
 import sys
 import logging
-import json
 import pickle
 import boto3
+import pandas as pd
+import numpy as np
 from time import time
 from datetime import date, datetime, timedelta
 from optparse import OptionParser, OptionGroup
 from sodapy import Socrata
+import dask.bag as db
 import dask.dataframe as dd
 
 
@@ -21,9 +23,9 @@ class SocrataMirror():
     def __init__(self, dataset, client, bucket):
         self.dataset = dataset
         self.client = client
-        self.bucket = 's3://' + bucket
+        self.bucket = bucket
 
-    def populate(self):
+    def populate(self, online=False):
         # set self.last_update to be day before first day in dataset
         self.last_update = 'an ancient time'
         # update entire dataset
@@ -42,37 +44,34 @@ class SocrataMirror():
         # refresh last_update marker
         self.last_update = date.today() - timedelta(days=1)
 
-    def mirror_date(self, date):
+    def mirror_date(self, date, local=False):
 
-        # query SODA for single given date
+        # query SODA for single given date, and gather into dask bag
+        d0, d1 = date_bounds(date)
+        query = f"checkoutdatetime between '{d0}' and '{d1}'"
+        results = self.client.get(self.dataset, limit=5, where=query)
+        bagged_results = db.from_sequence(results)
 
-        # https://data.seattle.gov/resource/5src-czff.json?$where=checkoutdatetime between '2015-01-10T12:00:00' and '2015-01-10T14:00:00'
-        # metadata = client.get_metadata(socrata_dataset)
-        # query = f'checkoutdatetime between "{y0}" and "{y1}"'
-        # query = 'id = 201903311801000010094636080'
-        # results = client.get(socrata_dataset, limit=5, where=query)
-        # results = client.get(socrata_dataset, limit=5, where="checkoutyear > 2018")
-        # results = client.get(socrata_dataset, limit=5, where='id = 201903311801000010094636080')
+        # clarify metadata and flatten bag into dataframe
+        meta = pd.DataFrame(columns=['id', 'checkoutyear', 'bibnumber',
+                                     'itembarcode', 'itemtype', 'collection',
+                                     'callnumber', 'itemtitle', 'subjects',
+                                     'checkoutdatetime'])
+        meta.checkoutyear = meta.checkoutyear.astype(np.int64)
+        meta.bibnumber = meta.bibnumber.astype(np.int64)
+        meta.checkoutdatetime = meta.checkoutdatetime.astype(np.datetime64)
+        date_frame = bagged_results.to_dataframe()
 
-        # dump raw JSON query to disk
-        dump_file_path = 'data/interim/' + f'dump_{date}.json'
-        with open(dump_file_path, 'w') as outfile:
-            json.dump(results, outfile)
-
-        # read JSON dump to a dask dataframe
-        df = dd.read_json(dump_file_path)
-
-        # write dataframe to parquet on S3
-        dd.to_parquet(df, f'{self.bucket}/records/')
-
-        # clean up
-        os.remove(dump_file_path)
+        # write dataframe to single parquet file on S3
+        date_frame = date_frame.repartition(npartitions=1)
+        dd.to_parquet(date_frame, f'{self.bucket}/records', append=True)
 
     def check(self):
         # check existing records
         # note date gaps (assume existing records are okay)
         gaps = []
-        logging.info(f"{len(gaps)} missing dates. Last update {self.last_update}.")
+        summary = f"{len(gaps)} missing. Last update: {self.last_update}."
+        logging.info(summary)
         return gaps
 
     def repair(self):
@@ -80,6 +79,43 @@ class SocrataMirror():
         # loop through gaps and fill with mirror_date, then update
         self.update()
         logging.info('Mirror repaired.')
+
+
+# utility function to get bounds of a date to pass to queries
+def date_bounds(date):
+    d0 = datetime.combine(date, datetime.min.time())
+    d0f = d0.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]
+    d1 = datetime.combine(date, datetime.max.time())
+    d1f = d1.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]
+    return d0f, d1f
+
+def load_mirror(mirror_id, online=False, client=None):
+    # unpack id variables
+    socrata_id, bucket, mirror_key = mirror_id
+    if client:
+        mirror = SocrataMirror(socrata_id, client, bucket)
+    else:
+        if online:
+            s3_client = boto3.resource('s3')
+            mirror_pkl = s3_client.Object(bucket[5:], mirror_key)
+            pbo = mirror_pkl.get()['Body'].read()
+            mirror = pickle.loads(pbo)
+            logging.info('Mirror unpickled from S3.')
+        else:
+            mirror = pickle.load(open(bucket+mirror_key, 'rb'))
+            logging.info(f"Mirror unpickled from {bucket}.")
+    return mirror
+
+def freeze_mirror(mirror_id, online=False):
+    # unpack id variables
+    _, bucket, mirror_key = mirror_id
+    if online:
+        s3_client = boto3.resource('s3')
+        pbo = pickle.dumps(mirror)
+        s3_client.Object(bucket[5:], mirror_key).put(Body=pbo)
+    else:
+        pickle.dump(mirror, open(bucket+mirror_key, 'wb'))
+    logging.info(f"Mirror pickled to {bucket}.")
 
 
 if __name__ == "__main__":
@@ -105,6 +141,9 @@ if __name__ == "__main__":
                       action="store", type="string", dest="m_date",
                       help="Selectively mirror a specific date.\
                       Specify date with format YYYY-MM-DD.")
+    group.add_option("-o", "--online",
+                     action="store_true", dest="online", default=False,
+                     help="Set to run on S3. Default is offline for testing.")
     parser.add_option_group(group)
 
     options, args = parser.parse_args()
@@ -116,50 +155,36 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(levelname)s %(message)s')
 
-    # utility function to get the size of a dataframe when saving
-    def record_size(df):
-        pass
-
-    # utility function to get bounds of a date to pass to queries
-    def date_bounds(date):
-        d0 = datetime.combine(date, datetime.min.time())
-        d1 = datetime.combine(date, datetime.max.time())
-        return d0, d1
-
     socrata_domain = 'data.seattle.gov'
     socrata_token = os.environ.get("SOCRATA_TOKEN")
     with Socrata(socrata_domain, socrata_token) as client:
 
-        t0 = time() # track update time
+        t0 = time() # track process time
 
-        socrata_dataset = '5src-czff'
-        mirror_bucket = 'lia-mirror-' + socrata_dataset
-        s3_resource = boto3.resource('s3')
+        socrata_dataset_id = '5src-czff'
         mirror_key ='mirror.pkl'
+        bucket = 's3://lia-mirror-' + socrata_dataset_id if options.online\
+                                                 else 'data/interim/'
+        mirror_id = (socrata_dataset_id, bucket, mirror_key)
 
         if options.init_mirror:
-            mirror = SocrataMirror(socrata_dataset, client, mirror_bucket)
+            mirror = load_mirror(mirror_id, options.online, client=client)
             mirror.populate()
+            freeze_mirror(mirror_id, options.online)
+        elif options.update_mirror:
+            mirror = load_mirror(mirror_id, options.online)
+            mirror.update()
+            freeze_mirror(mirror_id, options.online)
+        elif options.repair_mirror:
+            mirror = load_mirror(mirror_id, options.online)
+            mirror.repair()
+            freeze_mirror(mirror_id, options.online)
+        elif options.check_mirror:
+            mirror = load_mirror(mirror_id, options.online)
+            mirror.check()
+        elif options.m_date:
+            mirror = load_mirror(mirror_id, options.online)
+            mirror.mirror_date(datetime.strptime(options.m_date, '%Y-%m-%d'))
+            logging.info(f'Mirrored {options.m_date}.')
 
-        else:
-            pbo = s3_resource.Object(mirror_bucket, mirror_key).get()['Body'].read()
-            mirror = pickle.loads(pbo)
-            logging.info('Mirror unpickled from S3.')
-
-            if options.update_mirror:
-                mirror.update()
-
-            elif options.m_date:
-                mirror.mirror_date(m_date)
-                logging.info(f'Mirrored {m_date}.')
-
-            elif options.repair_mirror:
-                mirror.repair()
-                
-            elif options.check_mirror:
-                mirror.check()
-        
         logging.info(f'Duration: {time() - t0}s.')
-        pbo = pickle.dumps(mirror)
-        s3_resource.Object(mirror_bucket, mirror_key).put(Body=pbo)
-        logging.info('Mirror pickled to S3.')
