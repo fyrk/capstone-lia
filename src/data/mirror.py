@@ -8,6 +8,7 @@ import sys
 import logging
 import json
 import pickle
+import boto3
 from time import time
 from datetime import date, datetime, timedelta
 from optparse import OptionParser, OptionGroup
@@ -20,7 +21,7 @@ class SocrataMirror():
     def __init__(self, dataset, client, bucket):
         self.dataset = dataset
         self.client = client
-        self.bucket = bucket
+        self.bucket = 's3://' + bucket
 
     def populate(self):
         # set self.last_update to be day before first day in dataset
@@ -42,11 +43,8 @@ class SocrataMirror():
         self.last_update = date.today() - timedelta(days=1)
 
     def mirror_date(self, date):
-        dump_path = 'data/interim/'
+
         # query SODA for single given date
-        # write dataframe as parque file to S3
-
-
 
         # https://data.seattle.gov/resource/5src-czff.json?$where=checkoutdatetime between '2015-01-10T12:00:00' and '2015-01-10T14:00:00'
         # metadata = client.get_metadata(socrata_dataset)
@@ -57,18 +55,18 @@ class SocrataMirror():
         # results = client.get(socrata_dataset, limit=5, where='id = 201903311801000010094636080')
 
         # dump raw JSON query to disk
-        # dump_path = 'update_dump.json'
-        # with open(dump_path, 'w') as outfile:
-            # json.dump(results, outfile)
+        dump_file_path = 'data/interim/' + f'dump_{date}.json'
+        with open(dump_file_path, 'w') as outfile:
+            json.dump(results, outfile)
 
         # read JSON dump to a dask dataframe
-        # df = dd.read_json(dump_path)
+        df = dd.read_json(dump_file_path)
 
         # write dataframe to parquet on S3
-        # df.to_parquet()
+        dd.to_parquet(df, f'{self.bucket}/records/')
 
-        # clean up dump_path
-        logging.debug(f'Mirrored {date}.')
+        # clean up
+        os.remove(dump_file_path)
 
     def check(self):
         # check existing records
@@ -115,7 +113,7 @@ if __name__ == "__main__":
     print()
 
     # display progress logs on stdout
-    logging.basicConfig(level=logging.DEBUG,
+    logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(levelname)s %(message)s')
 
     # utility function to get the size of a dataframe when saving
@@ -134,30 +132,34 @@ if __name__ == "__main__":
 
         t0 = time() # track update time
 
+        socrata_dataset = '5src-czff'
+        mirror_bucket = 'lia-mirror-' + socrata_dataset
+        s3_resource = boto3.resource('s3')
+        mirror_key ='mirror.pkl'
+
         if options.init_mirror:
-            socrata_dataset = '5src-czff'
-            mirror_bucket = ''
             mirror = SocrataMirror(socrata_dataset, client, mirror_bucket)
             mirror.populate()
 
         else:
-            with open('data/interim/mirror.pkl', 'rb') as mpkl:
-                mirror = pickle.load(mpkl)
-                logging.info('Mirror loaded.')
+            pbo = s3_resource.Object(mirror_bucket, mirror_key).get()['Body'].read()
+            mirror = pickle.loads(pbo)
+            logging.info('Mirror unpickled from S3.')
 
-                if options.update_mirror:
-                    mirror.update()
+            if options.update_mirror:
+                mirror.update()
 
-                elif options.m_date:
-                    mirror.mirror_date(m_date)
+            elif options.m_date:
+                mirror.mirror_date(m_date)
+                logging.info(f'Mirrored {m_date}.')
 
-                elif options.repair_mirror:
-                    mirror.repair()
+            elif options.repair_mirror:
+                mirror.repair()
                 
-                elif options.check_mirror:
-                    mirror.check()
+            elif options.check_mirror:
+                mirror.check()
         
         logging.info(f'Duration: {time() - t0}s.')
-        with open('data/interim/mirror.pkl', 'wb') as mpkl:
-            pickle.dump(mirror, mpkl)
-        logging.info('Mirror pickled.')
+        pbo = pickle.dumps(mirror)
+        s3_resource.Object(mirror_bucket, mirror_key).put(Body=pbo)
+        logging.info('Mirror pickled to S3.')
