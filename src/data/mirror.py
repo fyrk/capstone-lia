@@ -25,68 +25,76 @@ class SocrataMirror():
         self.dataset = dataset
         self.client = client
         self.bucket = bucket
-        self.last_update = date(2005, 4, 12) # all records follow this date
         self.index = {}
         logging.info('Building mirror index...')
-        for idx in tqdm(date_index(self.last_update)):
+        # all records follow this date
+        for idx in date_index(date(2005, 4, 12)):
             self.index[idx] = False
         logging.info('Mirror initialized.')
 
-    def update(self):
+    def update(self, limit):
         # CAUTION: LONG LOOP! Don't 'maliciously' hammer the Socrata API.
-        logging.warning("Hold on, we're going for a ride...")
         delay = 33 # chosen to allow a ~48hr mirror as of April 2019.
-        # create daterange, loop from last update through yesterday
-        records = self.gaps()
-        logging.warning(f"{len(records)} records to mirror...")
-        for idx in tqdm(records):
+        # create list of gap jobs, loop through it
+        records = self.jobs(limit) if limit else self.jobs()
+        logging.warning(f"Hold on, {len(records)} records to mirror...")
+        for i, idx in enumerate(tqdm(records)):
             self.mirror_date(idx) # call mirror_date for each date
             self.index[idx] = True # mark date as mirrored
-            logging.debug(f"Mirrored copy for {date}. Sleep for {delay}s...")
-            sleep(delay)
+            length = len(records)
+            if (length > 1) and (i < length-1):
+                logging.debug(f"Sleeping for {delay}s...")
+                sleep(delay)
         logging.info(f"Mirror updated with {len(records)} records.")
-        # refresh last_update marker
-        self.last_update = date.today() - timedelta(days=1)
 
     def mirror_date(self, date, local=False):
         # query SODA for single given date, and gather into dask bag
+        # SODA returns 1000 records per get by default
+        # set limit above default with caution
+        # alternate method: page query with offset (not implemented here)
         d0, d1 = date_bounds(date)
         query = f"checkoutdatetime between '{d0}' and '{d1}'"
-        # results = self.client.get(self.dataset, limit=5, where=query)
-        results = self.client.get(self.dataset, where=query)
-        bagged_results = db.from_sequence(results)
+        logging.debug(f"Querying Socrata...")
+        bagged_results = db.from_sequence(self.client.get(self.dataset,
+                                                          limit=100000,
+                                                          where=query),
+                                          npartitions=24)
+        logging.debug(f"Query complete. Framing...")
 
         # clarify metadata and flatten bag into dataframe
         meta = pd.DataFrame(columns=['id', 'checkoutyear', 'bibnumber',
                                      'itembarcode', 'itemtype', 'collection',
                                      'callnumber', 'itemtitle', 'subjects',
                                      'checkoutdatetime'])
-        meta.checkoutyear = meta.checkoutyear.astype(np.int64)
         meta.bibnumber = meta.bibnumber.astype(np.int64)
-        meta.checkoutdatetime = meta.checkoutdatetime.astype(np.datetime64)
-        date_frame = bagged_results.to_dataframe()
+        meta.checkoutyear = meta.checkoutyear.astype(np.int64)
+        meta.checkoutdatetime = meta.checkoutdatetime.astype(np.datetime64)        
 
-        # write dataframe to single parquet file on S3
-        # date_frame = date_frame.repartition(npartitions=1)
-        dd.to_parquet(date_frame, f'{self.bucket}/records', append=True)
+        date_frame = bagged_results.to_dataframe(meta=meta)
+        logging.debug(f"Framing complete. Writing...")
 
-    def gaps(self):
-        gaps = []
+        # write dataframe to parquet file on S3
+        dd.to_parquet(date_frame,
+                      f'{self.bucket}/{date.year}/{date.month}/{date.day}')
+        logging.debug(f"Task 'Write Mirror {date}': complete.")
+
+    def jobs(self, limit=None):
+        jobs = []
         for date, mirrored in self.index.items():
             if not mirrored:
-                gaps.append(date)
-        return gaps
+                jobs.append(date)
+        return jobs[:limit] if limit else jobs
 
     def check(self):
         # check existing records
-        # note date gaps (assume existing records are okay)
-        summary = f"{len(self.gaps())} gaps. Last update: {self.last_update}."
+        # note date jobs (assume existing records are okay)
+        summary = f"{len(self.jobs())} gaps in mirror index."
         logging.info(summary)
 
 
-def date_index(last_update, end=date.today() - timedelta(days=1)):
+def date_index(start_mark, end=date.today() - timedelta(days=1)):
     dates = []
-    idx = last_update
+    idx = start_mark
     while idx < end:
         idx += timedelta(days=1)
         dates.append(idx)
@@ -137,11 +145,12 @@ if __name__ == "__main__":
                       action="store_true", dest="init_mirror", default=False,
                       help="Initialize new mirror with connections.")
     parser.add_option("-u", "--update",
-                      action="store_true", dest="update_mirror", default=False,
+                      action="store", type="int",
+                      dest="update_limit", default=None,
                       help="Update mirror with all missing records.")
     parser.add_option("-c", "--check",
                       action="store_true", dest="check_mirror", default=False,
-                      help="Verifies mirror, lists # of gaps and last update.")
+                      help="Verifies mirror, lists # of jobs.")
 
     group = OptionGroup(parser, "Debug options")
     group.add_option("-d", "--date",
@@ -177,9 +186,9 @@ if __name__ == "__main__":
         if options.init_mirror:
             mirror = load_mirror(mirror_id, options.online, client=client)
             freeze_mirror(mirror_id, options.online)
-        elif options.update_mirror:
+        elif options.update_limit:
             mirror = load_mirror(mirror_id, options.online)
-            mirror.update()
+            mirror.update(options.update_limit)
             freeze_mirror(mirror_id, options.online)
         elif options.check_mirror:
             mirror = load_mirror(mirror_id, options.online)
