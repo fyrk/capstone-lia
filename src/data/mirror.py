@@ -27,16 +27,21 @@ class SocrataMirror():
         self.bucket = bucket
         self.index = {}
         logging.info('Building mirror index...')
-        # all records follow this date
-        for idx in date_index(date(2005, 4, 12)):
-            self.index[idx] = False
+        self.last_update = date(2005, 4, 12) # all records follow this date
+        self.extend_index()
         logging.info('Mirror initialized.')
+
+    def extend_index(self):
+        for idx in date_index(self.last_update):
+            self.index[idx] = False
 
     def update(self, limit):
         # CAUTION: LONG LOOP! Don't 'maliciously' hammer the Socrata API.
-        delay = 33 # chosen to allow a ~48hr mirror as of April 2019.
+        delay = 30 # chosen to allow a ~48hr mirror as of April 2019.
         # create list of gap jobs, loop through it
-        records = self.jobs(limit) if limit else self.jobs()
+        # extend index
+        self.extend_index()
+        records = self.jobs(limit) if limit > 0 else self.jobs()
         logging.warning(f"Hold on, {len(records)} records to mirror...")
         for i, idx in enumerate(tqdm(records)):
             self.mirror_date(idx) # call mirror_date for each date
@@ -45,6 +50,7 @@ class SocrataMirror():
             if (length > 1) and (i < length-1):
                 logging.debug(f"Sleeping for {delay}s...")
                 sleep(delay)
+        self.last_update = yesterday()
         logging.info(f"Mirror updated with {len(records)} records.")
 
     def mirror_date(self, date, local=False):
@@ -79,6 +85,7 @@ class SocrataMirror():
         logging.debug(f"Task 'Write Mirror {date}': complete.")
 
     def jobs(self, limit=None):
+        # mark empties
         jobs = []
         for date, mirrored in self.index.items():
             if not mirrored:
@@ -88,11 +95,25 @@ class SocrataMirror():
     def check(self):
         # check existing records
         # note date jobs (assume existing records are okay)
-        summary = f"{len(self.jobs())} gaps in mirror index."
+        current_length = len(self.index)
+        entries = sum(1 for x in self.index.values() if x)
+        gaps = current_length - entries
+        last_update = self.last_update
+
+        status = "up to" if last_update == yesterday() else "out of"
+        new_count = len(self.jobs())
+
+        summary = f"Current mirror is {entries/current_length:2f}% complete.\n\
+                    \t     Mirror contains {entries} entries.\n\
+                    \t     Index {status} date (last update: {last_update}).\n\
+                    \t     There are {new_count} gaps that can be mirrored."
         logging.info(summary)
 
 
-def date_index(start_mark, end=date.today() - timedelta(days=1)):
+def yesterday():
+    return date.today() - timedelta(days=1)
+
+def date_index(start_mark, end=yesterday()):
     dates = []
     idx = start_mark
     while idx < end:
@@ -145,8 +166,7 @@ if __name__ == "__main__":
                       action="store_true", dest="init_mirror", default=False,
                       help="Initialize new mirror with connections.")
     parser.add_option("-u", "--update",
-                      action="store", type="int",
-                      dest="update_limit", default=None,
+                      action="store", type="int", dest="update_limit",
                       help="Update mirror with all missing records.")
     parser.add_option("-c", "--check",
                       action="store_true", dest="check_mirror", default=False,
