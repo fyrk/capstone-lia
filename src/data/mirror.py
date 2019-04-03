@@ -10,7 +10,8 @@ import pickle
 import boto3
 import pandas as pd
 import numpy as np
-from time import time
+from time import time, sleep
+from tqdm import tqdm
 from datetime import date, datetime, timedelta
 from optparse import OptionParser, OptionGroup
 from sodapy import Socrata
@@ -24,32 +25,35 @@ class SocrataMirror():
         self.dataset = dataset
         self.client = client
         self.bucket = bucket
-
-    def populate(self, online=False):
-        # set self.last_update to be day before first day in dataset
-        self.last_update = 'an ancient time'
-        # update entire dataset
-        # self.update()
+        self.last_update = date(2005, 4, 12) # all records follow this date
+        self.index = {}
+        logging.info('Building mirror index...')
+        for idx in tqdm(date_index(self.last_update)):
+            self.index[idx] = False
         logging.info('Mirror initialized.')
 
     def update(self):
-        # CAREFUL: DON'T 'MALICIOUSLY' HAMMER SOCRATA
-        delay = 33
-        # create daterange
-        # loop from last update through yesterday
-        for date in daterange:
-            # call mirror_date for each date
-            time.sleep(delay)
-        logging.info(f"Mirror updated with {len(daterange)} records.")
+        # CAUTION: LONG LOOP! Don't 'maliciously' hammer the Socrata API.
+        logging.warning("Hold on, we're going for a ride...")
+        delay = 33 # chosen to allow a ~48hr mirror as of April 2019.
+        # create daterange, loop from last update through yesterday
+        records = self.gaps()
+        logging.warning(f"{len(records)} records to mirror...")
+        for idx in tqdm(records):
+            self.mirror_date(idx) # call mirror_date for each date
+            self.index[idx] = True # mark date as mirrored
+            logging.debug(f"Mirrored copy for {date}. Sleep for {delay}s...")
+            sleep(delay)
+        logging.info(f"Mirror updated with {len(records)} records.")
         # refresh last_update marker
         self.last_update = date.today() - timedelta(days=1)
 
     def mirror_date(self, date, local=False):
-
         # query SODA for single given date, and gather into dask bag
         d0, d1 = date_bounds(date)
         query = f"checkoutdatetime between '{d0}' and '{d1}'"
-        results = self.client.get(self.dataset, limit=5, where=query)
+        # results = self.client.get(self.dataset, limit=5, where=query)
+        results = self.client.get(self.dataset, where=query)
         bagged_results = db.from_sequence(results)
 
         # clarify metadata and flatten bag into dataframe
@@ -63,23 +67,30 @@ class SocrataMirror():
         date_frame = bagged_results.to_dataframe()
 
         # write dataframe to single parquet file on S3
-        date_frame = date_frame.repartition(npartitions=1)
+        # date_frame = date_frame.repartition(npartitions=1)
         dd.to_parquet(date_frame, f'{self.bucket}/records', append=True)
+
+    def gaps(self):
+        gaps = []
+        for date, mirrored in self.index.items():
+            if not mirrored:
+                gaps.append(date)
+        return gaps
 
     def check(self):
         # check existing records
         # note date gaps (assume existing records are okay)
-        gaps = []
-        summary = f"{len(gaps)} missing. Last update: {self.last_update}."
+        summary = f"{len(self.gaps())} gaps. Last update: {self.last_update}."
         logging.info(summary)
-        return gaps
 
-    def repair(self):
-        gaps = self.check()
-        # loop through gaps and fill with mirror_date, then update
-        self.update()
-        logging.info('Mirror repaired.')
 
+def date_index(last_update, end=date.today() - timedelta(days=1)):
+    dates = []
+    idx = last_update
+    while idx < end:
+        idx += timedelta(days=1)
+        dates.append(idx)
+    return dates
 
 # utility function to get bounds of a date to pass to queries
 def date_bounds(date):
@@ -124,17 +135,13 @@ if __name__ == "__main__":
     parser = OptionParser()
     parser.add_option("-i", "--init",
                       action="store_true", dest="init_mirror", default=False,
-                      help="Initialize new mirror with all existing records.\
-                      This can take days.")
+                      help="Initialize new mirror with connections.")
     parser.add_option("-u", "--update",
                       action="store_true", dest="update_mirror", default=False,
-                      help="Update existing mirror with any new records.")
+                      help="Update mirror with all missing records.")
     parser.add_option("-c", "--check",
                       action="store_true", dest="check_mirror", default=False,
-                      help="Verifies mirror, listing gaps and last update.")
-    parser.add_option("-r", "--repair",
-                      action="store_true", dest="repair_mirror", default=False,
-                      help="Fills gaps and updates mirror.")
+                      help="Verifies mirror, lists # of gaps and last update.")
 
     group = OptionGroup(parser, "Debug options")
     group.add_option("-d", "--date",
@@ -169,15 +176,10 @@ if __name__ == "__main__":
 
         if options.init_mirror:
             mirror = load_mirror(mirror_id, options.online, client=client)
-            mirror.populate()
             freeze_mirror(mirror_id, options.online)
         elif options.update_mirror:
             mirror = load_mirror(mirror_id, options.online)
             mirror.update()
-            freeze_mirror(mirror_id, options.online)
-        elif options.repair_mirror:
-            mirror = load_mirror(mirror_id, options.online)
-            mirror.repair()
             freeze_mirror(mirror_id, options.online)
         elif options.check_mirror:
             mirror = load_mirror(mirror_id, options.online)
