@@ -42,7 +42,7 @@ class SocrataMirror():
             response = s3_client.list_objects_v2(
                 Bucket=self.bucket[5:],
                 Prefix=f'{idx.year}/{idx.month}/{idx.day}')
-            self.index[idx] = True if response['Contents'] != 26 else False
+            self.index[idx] = True if response['KeyCount'] != 26 else False
         logging.info('Repaired mirror index.')
         self.check()
 
