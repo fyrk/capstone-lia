@@ -34,6 +34,18 @@ class SocrataMirror():
         for idx in date_index(self.last_update):
             self.index[idx] = False
 
+    def repair_index(self):
+        self.last_update = date(2005, 4, 12)
+        self.extend_index()
+        for idx in tqdm(self.index.keys()):
+            s3_client = boto3.client('s3')
+            response = s3_client.list_objects_v2(
+                Bucket=self.bucket[5:],
+                Prefix=f'{idx.year}/{idx.month}/{idx.day}')
+            self.index[idx] = response
+        logging.info('Repaired mirror index.')
+        self.check()
+
     def update(self, limit):
         # CAUTION: LONG LOOP! Don't 'maliciously' hammer the Socrata API.
         delay = 30  # chosen to allow a ~48hr mirror as of April 2019.
@@ -181,6 +193,9 @@ if __name__ == "__main__":
     group.add_option("-o", "--online",
                      action="store_true", dest="online", default=False,
                      help="Set to run on S3. Default is offline for testing.")
+    group.add_option("-r", "--repair",
+                     action="store_true", dest="repair", default=False,
+                     help="Set to repair index by checking S3 contents.")
     parser.add_option_group(group)
 
     options, args = parser.parse_args()
@@ -218,5 +233,8 @@ if __name__ == "__main__":
             mirror = load_mirror(mirror_id, options.online)
             mirror.mirror_date(datetime.strptime(options.m_date, '%Y-%m-%d'))
             logging.info(f'Mirrored {options.m_date}.')
+        elif options.repair:
+            mirror = load_mirror(mirror_id, options.online)
+            mirror.repair_index()
 
         logging.info(f'Duration: {time() - t0}s.')
