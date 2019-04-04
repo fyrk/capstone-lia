@@ -4,7 +4,6 @@ Queries a JSON API and writes daily records as parquet files.
 """
 
 import os
-import sys
 import logging
 import pickle
 import boto3
@@ -27,7 +26,7 @@ class SocrataMirror():
         self.bucket = bucket
         self.index = {}
         logging.info('Building mirror index...')
-        self.last_update = date(2005, 4, 12) # all records follow this date
+        self.last_update = date(2005, 4, 12)  # all records follow this date
         self.extend_index()
         logging.info('Mirror initialized.')
 
@@ -37,17 +36,17 @@ class SocrataMirror():
 
     def update(self, limit):
         # CAUTION: LONG LOOP! Don't 'maliciously' hammer the Socrata API.
-        delay = 30 # chosen to allow a ~48hr mirror as of April 2019.
+        delay = 30  # chosen to allow a ~48hr mirror as of April 2019.
         # create list of gap jobs, loop through it
         # extend index
         self.extend_index()
         records = self.jobs(limit) if limit > 0 else self.jobs()
         logging.warning(f"Hold on, {len(records)} records to mirror...")
         for i, idx in enumerate(tqdm(records)):
-            self.mirror_date(idx) # call mirror_date for each date
-            self.index[idx] = True # mark date as mirrored
+            self.mirror_date(idx)  # call mirror_date for each date
+            self.index[idx] = True  # mark date as mirrored
             length = len(records)
-            if (length > 1) and (i < length-1):
+            if (length > 1) and (i < length - 1):
                 logging.debug(f"Sleeping for {delay}s...")
                 sleep(delay)
         self.last_update = yesterday()
@@ -74,7 +73,7 @@ class SocrataMirror():
                                      'checkoutdatetime'])
         meta.bibnumber = meta.bibnumber.astype(np.int64)
         meta.checkoutyear = meta.checkoutyear.astype(np.int64)
-        meta.checkoutdatetime = meta.checkoutdatetime.astype(np.datetime64)        
+        meta.checkoutdatetime = meta.checkoutdatetime.astype(np.datetime64)
 
         date_frame = bagged_results.to_dataframe(meta=meta)
         logging.debug(f"Framing complete. Writing...")
@@ -87,9 +86,9 @@ class SocrataMirror():
     def jobs(self, limit=None):
         # mark empties
         jobs = []
-        for date, mirrored in self.index.items():
+        for idx, mirrored in self.index.items():
             if not mirrored:
-                jobs.append(date)
+                jobs.append(idx)
         return jobs[:limit] if limit else jobs
 
     def check(self):
@@ -97,9 +96,7 @@ class SocrataMirror():
         # note date jobs (assume existing records are okay)
         current_length = len(self.index)
         entries = sum(1 for x in self.index.values() if x)
-        gaps = current_length - entries
         last_update = self.last_update
-
         status = "up to" if last_update == yesterday() else "out of"
         new_count = len(self.jobs())
 
@@ -113,6 +110,7 @@ class SocrataMirror():
 def yesterday():
     return date.today() - timedelta(days=1)
 
+
 def date_index(start_mark, end=yesterday()):
     dates = []
     idx = start_mark
@@ -121,6 +119,7 @@ def date_index(start_mark, end=yesterday()):
         dates.append(idx)
     return dates
 
+
 # utility function to get bounds of a date to pass to queries
 def date_bounds(date):
     d0 = datetime.combine(date, datetime.min.time())
@@ -128,6 +127,7 @@ def date_bounds(date):
     d1 = datetime.combine(date, datetime.max.time())
     d1f = d1.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]
     return d0f, d1f
+
 
 def load_mirror(mirror_id, online=False, client=None):
     # unpack id variables
@@ -142,9 +142,10 @@ def load_mirror(mirror_id, online=False, client=None):
             mirror = pickle.loads(pbo)
             logging.info('Mirror unpickled from S3.')
         else:
-            mirror = pickle.load(open(bucket+mirror_key, 'rb'))
+            mirror = pickle.load(open(bucket + mirror_key, 'rb'))
             logging.info(f"Mirror unpickled from {bucket}.")
     return mirror
+
 
 def freeze_mirror(mirror_id, online=False):
     # unpack id variables
@@ -154,7 +155,7 @@ def freeze_mirror(mirror_id, online=False):
         pbo = pickle.dumps(mirror)
         s3_client.Object(bucket[5:], mirror_key).put(Body=pbo)
     else:
-        pickle.dump(mirror, open(bucket+mirror_key, 'wb'))
+        pickle.dump(mirror, open(bucket + mirror_key, 'wb'))
     logging.info(f"Mirror pickled to {bucket}.")
 
 
@@ -174,9 +175,9 @@ if __name__ == "__main__":
 
     group = OptionGroup(parser, "Debug options")
     group.add_option("-d", "--date",
-                      action="store", type="string", dest="m_date",
-                      help="Selectively mirror a specific date.\
-                      Specify date with format YYYY-MM-DD.")
+                     action="store", type="string", dest="m_date",
+                     help="Selectively mirror a specific date.\
+                     Specify date with format YYYY-MM-DD.")
     group.add_option("-o", "--online",
                      action="store_true", dest="online", default=False,
                      help="Set to run on S3. Default is offline for testing.")
@@ -195,12 +196,12 @@ if __name__ == "__main__":
     socrata_token = os.environ.get("SOCRATA_TOKEN")
     with Socrata(socrata_domain, socrata_token) as client:
 
-        t0 = time() # track process time
+        t0 = time()  # track process time
 
         socrata_dataset_id = '5src-czff'
-        mirror_key ='mirror.pkl'
+        mirror_key = 'mirror.pkl'
         bucket = 's3://lia-mirror-' + socrata_dataset_id if options.online\
-                                                 else 'data/interim/'
+            else 'data/interim/'
         mirror_id = (socrata_dataset_id, bucket, mirror_key)
 
         if options.init_mirror:
