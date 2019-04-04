@@ -42,7 +42,7 @@ class SocrataMirror():
             response = s3_client.list_objects_v2(
                 Bucket=self.bucket[5:],
                 Prefix=f'{idx.year}/{idx.month}/{idx.day}')
-            self.index[idx] = response
+            self.index[idx] = True if response['Contents'] != 26 else False
         logging.info('Repaired mirror index.')
         self.check()
 
@@ -236,5 +236,6 @@ if __name__ == "__main__":
         elif options.repair:
             mirror = load_mirror(mirror_id, options.online)
             mirror.repair_index()
+            freeze_mirror(mirror_id, options.online)
 
         logging.info(f'Duration: {time() - t0}s.')
