@@ -11,14 +11,14 @@ import dask.dataframe as dd
 import psycopg2
 from io import StringIO
 import pandas as pd
-from src.data.mirror import load_mirror, SocrataMirror
+from mirror import load_mirror, SocrataMirror
 
 
 class RDSMirrorInterface():
 
     def __init__(self, mirror_id):
         # "connect" to S3 mirror
-        self.mirror = load_mirror(self.mirror_id, online=True)
+        self.mirror = load_mirror(mirror_id, online=True)
         # connect to psql
         self.db = psycopg2.connect(
             database="mirror",
@@ -35,7 +35,7 @@ class RDSMirrorInterface():
         # copy mirrored dates to psql
         for d_idx, mirrored in tqdm(self.mirror.index.items()):
             if mirrored:
-                self.write_records(self.mirror_df(self.mirror.bucket, d_idx))
+                self.write_records(self.mirror_df(d_idx))
 
     # Receives records from init_db or mirror update, trims,  writes to RDS.
     def write_records(self, df):
@@ -54,7 +54,7 @@ class RDSMirrorInterface():
     def mirror_df(self, date_index):
         # look up date in mirror, load entire day's records
         date_str = f'/{date_index.year}/{date_index.month}/{date_index.day}'
-        df = dd.read_parquet(self.bucket + date_str)
+        df = dd.read_parquet(self.mirror.bucket + date_str)
         # dropping redundant columns
         df = df.drop(['checkoutyear', 'itembarcode'], axis=1)
         flat_df = df.compute()
