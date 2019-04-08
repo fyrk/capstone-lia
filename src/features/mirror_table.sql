@@ -1,13 +1,13 @@
 # create mirror table
 CREATE TABLE mirror (
-	event_id INT PRIMARY KEY,
+	event_id VARCHAR (32) PRIMARY KEY,
 	event_datetime TIMESTAMP NOT NULL,
-	item_bibnum INT,
-	item_title VARCHAR (255),
-	item_callnum VARCHAR (32),
-	item_type VARCHAR (32),
-	item_collection VARCHAR (32),
-	item_subjects VARCHAR (255)
+	item_bibnum BIGINT,
+	item_title TEXT,
+	item_callnum VARCHAR (64),
+	item_type VARCHAR (16),
+	item_collection VARCHAR (16),
+	item_subjects TEXT
 );
 
 # sample insertion
