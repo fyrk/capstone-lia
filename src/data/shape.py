@@ -5,8 +5,10 @@ Provides initialization and update methods.
 
 import os
 import logging
+import argparse
 from time import time
 from tqdm import tqdm
+from datetime import date, datetime
 import dask.dataframe as dd
 import psycopg2
 from io import StringIO
@@ -70,6 +72,11 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(levelname)s %(message)s')
 
+    parser = argparse.ArgumentParser(description='Import records to RDS.')
+    parser.add_argument('-d', dest='init_date', action='store',
+                        help='add new records starting at date provided')
+    args = parser.parse_args()
+
     # initialize mirror connection
     socrata_dataset_id = '5src-czff'
     mirror_key = 'mirror.pkl'
@@ -83,5 +90,5 @@ if __name__ == "__main__":
 
     # initialize entire db
     t0 = time()  # track process time
-    dbi.init_db()
+    dbi.init_db(datetime.strptime(args.init_date, '%Y-%m-%d').date())
     logging.info(f'Duration: {time() - t0}s.')
