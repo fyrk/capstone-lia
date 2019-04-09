@@ -29,11 +29,13 @@ class RDSMirrorInterface():
         self.cur = self.db.cursor()
 
     # init_db retreives records from S3 mirror, and passes to write_records
-    def init_db(self):
-        lenrec = len(self.mirror.index)
-        logging.warning(f"Populating lia-db. {lenrec} records to process.")
+    def init_db(self, date1):
+        # lenrec = len(self.mirror.index)
+        # logging.warning(f"Populating lia-db. {lenrec} records to process.")
+        logging.warning(f"Populating lia-db.")
         # copy mirrored dates to psql
-        for d_idx, mirrored in tqdm(self.mirror.index.items()):
+        cut_didx = [(k, v) for k, v in self.mirror.index.items() if k >= date1]
+        for d_idx, mirrored in tqdm(cut_didx):
             if mirrored:
                 self.write_records(self.mirror_df(d_idx))
 
@@ -47,7 +49,7 @@ class RDSMirrorInterface():
         # use psql bulk copy as tsv
         cc = ['event_id', 'item_bibnum', 'item_type', 'item_collection',
               'item_callnum', 'item_title', 'item_subjects', 'event_datetime']
-        self.cur.copy_from(buff, 'mirror', sep='\t', columns=cc)
+        self.cur.copy_from(buff, 'mirror', sep='\t', columns=cc, null='None')
         self.db.commit()
 
     # returns a pandas dataframe with all checkout entries for given date
@@ -58,6 +60,7 @@ class RDSMirrorInterface():
         # dropping redundant columns
         df = df.drop(['checkoutyear', 'itembarcode'], axis=1)
         flat_df = df.compute()
+        # flat_df.dropna(inplace=True)
         return flat_df
 
 

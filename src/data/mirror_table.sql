@@ -1,7 +1,8 @@
-# create mirror table
+DROP TABLE IF EXISTS mirror;
+
 CREATE TABLE mirror (
 	event_id VARCHAR (32) PRIMARY KEY,
-	event_datetime TIMESTAMP NOT NULL,
+	event_datetime TIMESTAMP,
 	item_bibnum BIGINT,
 	item_title TEXT,
 	item_callnum VARCHAR (64),
@@ -9,23 +10,3 @@ CREATE TABLE mirror (
 	item_collection VARCHAR (16),
 	item_subjects TEXT
 );
-
-# sample insertion
-INSERT INTO mirror (
-	event_id,
-	event_datetime,
-	item_bibnum,
-	item_title,
-	item_callnum,
-	item_type,
-	item_collection,
-	item_subjects)
-VALUES (
-	201903261944000010070884381,
-	'03/26/2019 07:44:00 PM',
-	2604131,
-	'Taking the leap freeing ourselves from old habits and fears',
-	'294.3444 C4518T 2009',
-	'acbk',
-	'nanf',
-	'Spiritual life Buddhism');
