@@ -1,73 +1,85 @@
 """
-train model on catalog table using a given date
+build model on catalog table using a given date
 """
 
 import os
-import numpy as np
 import dask.dataframe as dd
 import dask.array as da
 from dask_ml.preprocessing import Categorizer, DummyEncoder
-from dask_ml.feature_extraction import HashingVectorizer
-from sparse import COO
+from dask_ml.feature_extraction.text import HashingVectorizer
 from sklearn.pipeline import make_pipeline
 from sklearn.linear_model import SGDRegressor
 
-from time import time
-from datetime import date, datetime, timedelta
+# import numpy as np
+# import dask.bag as db
+# from time import time
+# from datetime import date
+# from datetime import datetime, timedelta
+# from sparse import COO
 
 
 class LibraryInterestModel():
 
-    def __init__(self, model_start, model_end):
-        self.start = model_start
-        self.end = model_end
-
-    def _build_feature_matrix(self):
-        # query catalog for raw data
-        host = os.environ.get("LIA_HOST"),
-        user = os.environ.get("LIA_USER"),
-        password = os.environ.get("LIA_PASSWORD"),
+    def _build_FT_matrix(self, model_start, model_end):
+        # query catalog for raw data, index by checkout date
+        host = os.environ.get("LIA_HOST")
+        user = os.environ.get("LIA_USER")
+        password = os.environ.get("LIA_PASSWORD")
         uri = f'postgresql://{user}:{password}@{host}:5432/mirror'
-        df = dd.read_sql_table('catalog', uri, 'item_bibnum')
+        raw_df = dd.read_sql_table('catalog', uri, 'first_checkout')
+
+        # split out model range: only keep records between start and end:
+
+        # throws KeyError: 1113523200000000000
+        # mdf = raw_df.loc[model_start:model_end]
+
+        # throws DateParseError: Unknown datetime string format, unable to parse: first_checkout
+        mdf = raw_df[(raw_df['first_checkout'] > model_start) &
+                     (raw_df['first_checkout'] < model_end)]
+
+        # extract y targets (first_6mo_checkouts)
+        self._targets = mdf['first_6mo_checkouts'].to_dask_array()
 
         # build out onehot matrix for categoricals
-        catX = df[['item_type', 'item_collection']]
-        pipe = make_pipeline(
-            Categorizer(),
-            DummyEncoder()
-        )
-        catXa = catX.to_dask_array()
-        self._cat_enc = OneHotEncoder(sparse=True).fit(catXa)
-        result = self.cat_enc.transform(catXa)
-        result.map_blocks(COO.from_scipy_sparse, dtype=result.dtype).compute()
+        pipe = make_pipeline(Categorizer(), DummyEncoder())
+        cat_x = pipe.fit_transform(mdf[['item_type', 'item_collection']])  # da
 
         # build out tfidf matrix for text fields
-        textX = df[['item_title', 'item_subjects']]
+        title_corpus = mdf['item_title']
+        subjects_corpus = mdf['item_subjects']
+        vectorizer = HashingVectorizer()
+        title_x = vectorizer.transform(title_corpus)  # da
+        subjects_x = vectorizer.transform(subjects_corpus)  # da
 
-        self._targets = df.first_6mo_checkouts
-        self._features = df.array()
+        # combine onehot (cat_x) and tfidf (title_x, subjects_x) matrices
+        data = [cat_x, title_x, subjects_x]
+
+        # throws TypeError: Truth of Delayed objects is not supported
+        self._features = da.concatenate(data, axis=1)
+
+    def fit(self, model_start, model_end):
+        self._build_FT_matrix(model_start, model_end)
+        self.clf = SGDRegressor()
+        self.clf.fit(self._features, self._targets)
 
     def _transform(self, bib_item):
-
-        transformed_item = bib_item
-        return transformed_item
-
-    def fit(self):
-        self._build_feature_matrix()
-        self.clf = SGDRegressor()
-        self.clf.fit(self.fm, self.targets)
-        pass
+        transformed_bib_item = bib_item  # fake placeholder transform
+        return transformed_bib_item
 
     def predict(self, bib_item):
-        """bib_item is a 1-row dataframe with columns:
-            - release_date (datetime of first checkout),
-            - type,
-            - collection,
-            - title,
-            - subjects
-        * release_date is used by build_feature_matrix to select the feature
-        matrix with which to train the model.
+        """
+        * release_date could be used by build_feature_matrix to select the
+        feature matrix with which to train the model.
         * the other four need transformation to align with the feature matrix.
         """
-        tbi = self._transform(bib_item)
-        return self.clf.predict(tbi)
+        transformed_bib_item = self._transform(bib_item)
+        return self.clf.predict(transformed_bib_item)
+
+
+if __name__ == "__main__":
+
+    test_start = '2005-04-15'
+    test_end = '2005-08-12'
+    lim = LibraryInterestModel()
+
+    lim.fit(test_start, test_end)
