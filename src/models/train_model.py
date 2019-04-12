@@ -33,7 +33,8 @@ class LibraryInterestModel():
         # throws KeyError: 1113523200000000000
         # mdf = raw_df.loc[model_start:model_end]
 
-        # throws DateParseError: Unknown datetime string format, unable to parse: first_checkout
+        # throws DateParseError:
+        # Unknown datetime string format, unable to parse: first_checkout
         mdf = raw_df[(raw_df['first_checkout'] > model_start) &
                      (raw_df['first_checkout'] < model_end)]
 
