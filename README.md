@@ -1,6 +1,6 @@
 # LIA
 
-A library inventory aide, predicting demand for new media releases.
+A library inventory advisor, built to assist in gauging demand for new media releases.
 
 _Given the historical catalog usage of a library (or a private bookstore, or other similar institution), predict how popular a new release will be. How many people will want to read it? How many copies are needed?_
 
