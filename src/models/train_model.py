@@ -49,19 +49,26 @@ class LibraryInterestModel():
     def _build_x(self, pipe, vectorizer):
         # build out onehot matrix for categoricals
         logging.debug("Transforming categoricals to one-hot matrix...")
-        cat_x = pipe.fit_transform(self.mdf[['item_type', 'item_collection']])
+        cx_df = pipe.fit_transform(self.mdf[['item_type', 'item_collection']])
+        cxa = cx_df.to_dask_array(lengths=True)
 
-        # build out tfidf matrix for text fields
+        # build out vocabulary  matrix for text fields
         logging.debug("Vectorizing text fields...")
+        # extract corpus series
         title_corpus = self.mdf['item_title']
         subjects_corpus = self.mdf['item_subjects']
-        title_x = vectorizer.transform(title_corpus)
-        subjects_x = vectorizer.transform(subjects_corpus)
+        # vectorize vocabularies
+        tc_vec = vectorizer.fit_transform(title_corpus)
+        sc_vec = vectorizer.fit_transform(subjects_corpus)
+        # convert vocabs to dask arrays, forcing calculation of chunksizes
+        tc_va = tc_vec.compute()
+        sc_va = sc_vec.compute()
+        tca = da.from_array(tc_va, tc_va.shape)
+        sca = da.from_array(sc_va, sc_va.shape)
 
-        # combine onehot (cat_x) and tfidf (title_x, subjects_x) matrices
+        # combine categorical and vocabulary matrices
         logging.debug("Concatenating categoricals and text fields...")
-        self._x = da.concatenate([cat_x, title_x, subjects_x], axis=1,
-                                 allow_unknown_chunksizes=True)
+        self._x = da.concatenate([cxa, tca, sca], axis=1)
 
     def _make_train_test_splits(self, compute=False):
         self._splits = train_test_split(self._x.compute(),
@@ -90,7 +97,7 @@ class LibraryInterestModel():
     def _run_models(self, encoder, vectorizer):
         # sklearn SGDRegressor
         self.clf = SGDRegressor(max_iter=1000, tol=1e-3)
-        self.clf.fit(self._splits[0].toarray(), self._splits[2])
+        self.clf.fit(self._splits[0], self._splits[2])
         self.scores.append((encoder.__class__.__name__,
                             vectorizer.__class__.__name__,
                             self.clf.__class__.__name__,
@@ -143,7 +150,8 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)s %(message)s')
 
-    model_end = date.today()
+    # model_end = date.today()
+    model_end = date(2005, 6, 1)
     lim = LibraryInterestModel(model_end.strftime("%Y-%m-%d"))
 
     lim.score_models()
