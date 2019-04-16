@@ -5,23 +5,15 @@ build model on catalog table using a given date range
 import os
 import logging
 import dask.dataframe as dd
-import dask.array as da
-from dask_ml.preprocessing import Categorizer
-
-from dask_ml.feature_extraction.text import HashingVectorizer
-
-from dask_ml.preprocessing import DummyEncoder
-from dask_ml.preprocessing import OneHotEncoder
-
-from dask_ml.linear_model import LinearRegression
-from dask_ml.linear_model import PartialSGDRegressor
-from dask_ml.linear_model import PartialPassiveAggressiveRegressor
-from sklearn.linear_model import SGDRegressor
+from datetime import date
+# from joblib import dump
 
 from dask_ml.model_selection import train_test_split
+from dask_ml.preprocessing import Categorizer, DummyEncoder, OneHotEncoder
+from dask_ml.feature_extraction.text import HashingVectorizer
+from dask_ml.wrappers import Incremental
 from sklearn.pipeline import make_pipeline
-from datetime import date
-from joblib import dump
+from sklearn.linear_model import SGDRegressor, PassiveAggressiveRegressor
 
 
 class LibraryInterestModel():
@@ -50,33 +42,12 @@ class LibraryInterestModel():
         # build out onehot matrix for categoricals
         logging.debug("Transforming categoricals to one-hot matrix...")
         cx_df = pipe.fit_transform(self.mdf[['item_type', 'item_collection']])
-        cxa = cx_df.to_dask_array(lengths=True)
+        self._x = cx_df.to_dask_array(lengths=True)
 
-        # build out vocabulary  matrix for text fields
-        logging.debug("Vectorizing text fields...")
-        # extract corpus series
-        title_corpus = self.mdf['item_title']
-        subjects_corpus = self.mdf['item_subjects']
-        # vectorize vocabularies
-        tc_vec = vectorizer.fit_transform(title_corpus)
-        sc_vec = vectorizer.fit_transform(subjects_corpus)
-        # convert vocabs to dask arrays, forcing calculation of chunksizes
-        tc_va = tc_vec.compute()
-        sc_va = sc_vec.compute()
-        tca = da.from_array(tc_va, tc_va.shape)
-        sca = da.from_array(sc_va, sc_va.shape)
-
-        # combine categorical and vocabulary matrices
-        logging.debug("Concatenating categoricals and text fields...")
-        self._x = da.concatenate([cxa, tca, sca], axis=1)
-
-    def _make_train_test_splits(self, compute=False):
-        self._splits = train_test_split(self._x.compute(),
-                                        self._y.compute(),
-                                        test_size=0.1)
-
-    def fit(self):
-        logging.info("Fitting model to feature-target matrices...")
+    def fit(self, clf):
+        logging.info("Fitting selected model...")
+        self.clf = Incremental(clf)
+        self.clf.fit(self._x, self._y)
 
     def _transform(self, bib_item):
         transformed_bib_item = bib_item  # fake placeholder transform
@@ -91,57 +62,32 @@ class LibraryInterestModel():
         transformed_bib_item = self._transform(bib_item)
         return self.clf.predict(transformed_bib_item)
 
-    def score(self):
-        return self.clf.score(self._splits[1], self._splits[3])
+    def _score(self, vec, enc, clf, xtr, ytr, xts, yts):
+        model = Incremental(clf)
+        model.fit(xtr, ytr)
+        logging.info(f"""Results:
+                        {enc.__class__.__name__}
+                        {vec.__class__.__name__}
+                        {clf.__class__.__name__}
+                        R^2: {model.score(xts, yts)}""")
 
-    def _run_models(self, encoder, vectorizer):
-        # sklearn SGDRegressor
-        self.clf = SGDRegressor(max_iter=1000, tol=1e-3)
-        self.clf.fit(self._splits[0], self._splits[2])
-        self.scores.append((encoder.__class__.__name__,
-                            vectorizer.__class__.__name__,
-                            self.clf.__class__.__name__,
-                            self.clf.score(self._splits[1], self._splits[3])))
-        # Dask linreg
-        self.clf = LinearRegression(fit_intercept=False)
-        self.clf.fit(self._splits[0].toarray(), self._splits[2])
-        self.scores.append((encoder.__class__.__name__,
-                            vectorizer.__class__.__name__,
-                            self.clf.__class__.__name__,
-                            self.clf.score(self._splits[1], self._splits[3])))
-        # Dask SGDRegressor
-        self.clf = PartialSGDRegressor()
-        self.clf.fit(self._splits[0].toarray(), self._splits[2])
-        self.scores.append((encoder.__class__.__name__,
-                            vectorizer.__class__.__name__,
-                            self.clf.__class__.__name__,
-                            self.clf.score(self._splits[1], self._splits[3])))
-        # Dask PARegressor
-        self.clf = PartialPassiveAggressiveRegressor()
-        self.clf.fit(self._splits[0].toarray(), self._splits[2])
-        self.scores.append((encoder.__class__.__name__,
-                            vectorizer.__class__.__name__,
-                            self.clf.__class__.__name__,
-                            self.clf.score(self._splits[1], self._splits[3])))
+    def _scm(self, enc, vec):
+        logging.info("Preparing models...")
+        pipe = make_pipeline(Categorizer(), enc)
+        self._build_x(pipe, vec)
+        xtr, xts, ytr, yts = train_test_split(self._x, self._y, test_size=0.1)
+        # Dask Incremental; sklearn SGDRegressor
+        logging.debug("...with incremental SGDRegressor")
+        self._score(vec, enc, SGDRegressor(), xtr, ytr, xts, yts)
+        # Dask Incremental; sklearn PassiveAggressiveRegressor
+        logging.debug("...with incremental PassiveAggressiveRegressor")
+        self._score(vec, enc, PassiveAggressiveRegressor(), xtr, ytr, xts, yts)
 
     def score_models(self):
-        self.scores = []
-        logging.info("Building features and targets...")
-        encoder = OneHotEncoder()
-        vectorizer = HashingVectorizer()
-        pipe = make_pipeline(Categorizer(), encoder)
-        self._build_x(pipe, vectorizer)
-        self._make_train_test_splits()
-        self._run_models(encoder, vectorizer)
-
-        logging.info("Building features and targets...")
-        encoder = DummyEncoder()
-        pipe = make_pipeline(Categorizer(), encoder)
-        self._build_x(pipe, vectorizer)
-        self._make_train_test_splits()
-        self._run_models(encoder, vectorizer)
-
-        print(self.scores)
+        logging.info("Scoring OneHotEncoder...")
+        self._scm(OneHotEncoder(), HashingVectorizer())
+        logging.info("Scoring DummyEncoder...")
+        self._scm(DummyEncoder(), HashingVectorizer())
 
 
 if __name__ == "__main__":
@@ -151,12 +97,10 @@ if __name__ == "__main__":
                         format='%(asctime)s %(levelname)s %(message)s')
 
     # model_end = date.today()
-    model_end = date(2005, 6, 1)
+    model_end = date(2005, 6, 2)
     lim = LibraryInterestModel(model_end.strftime("%Y-%m-%d"))
 
     lim.score_models()
 
-    # logging.info("Making train-test splits...")
-    # self._make_train_test_splits()
     # lim.fit()
     # dump(lim, '../models/lim.joblib')
